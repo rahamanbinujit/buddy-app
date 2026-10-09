@@ -301,7 +301,7 @@ class SettingsWindow: NSWindow {
         }
 
         // API key section — visible for providers that need a key
-        let needsKey = activeProvider == .claudeAPI || activeProvider == .openAI || activeProvider == .gemini
+        let needsKey = activeProvider.requiresAPIKey
         apiKeyHeader.isHidden = !needsKey
         apiKeyField.isHidden = !needsKey
         apiKeySaveBtn.isHidden = !needsKey
@@ -364,6 +364,7 @@ class SettingsWindow: NSWindow {
 
     @objc private func providerTapped(_ sender: NSButton) {
         guard let provider = providerButtons.first(where: { $0.value == sender })?.key else { return }
+        apiKeyField.stringValue = ""
         SettingsManager.shared.setProvider(provider)
         refreshState()
     }
@@ -378,16 +379,26 @@ class SettingsWindow: NSWindow {
         let key = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return }
         let provider = SettingsManager.shared.settings.activeProvider
-        _ = KeychainHelper.saveAPIKey(key, for: provider)
+        guard KeychainHelper.saveAPIKey(key, for: provider) else {
+            apiKeyHintLabel.stringValue = "Could not save the API key. Try again."
+            return
+        }
+        NotificationCenter.default.post(name: SettingsManager.modelConfigChanged, object: nil)
         apiKeyField.stringValue = ""
         refreshState()
+        apiKeyHintLabel.stringValue = "API key saved."
     }
 
     @objc private func deleteAPIKey() {
         let provider = SettingsManager.shared.settings.activeProvider
-        _ = KeychainHelper.deleteAPIKey(for: provider)
+        guard KeychainHelper.deleteAPIKey(for: provider) else {
+            apiKeyHintLabel.stringValue = "Could not delete the API key. Try again."
+            return
+        }
+        NotificationCenter.default.post(name: SettingsManager.modelConfigChanged, object: nil)
         apiKeyField.stringValue = ""
         refreshState()
+        apiKeyHintLabel.stringValue = "API key deleted."
     }
 
     @objc private func openVoiceSettings() {

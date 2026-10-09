@@ -37,7 +37,8 @@ struct KeychainHelper {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "\(bundlePrefix).\(service)",
         ]
-        return SecItemDelete(query as CFDictionary) == errSecSuccess
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     // MARK: - UserDefaults (for auth tokens — no Keychain permission dialog)
@@ -62,29 +63,17 @@ struct KeychainHelper {
     static let authRefreshToken = "auth.refresh"
 
     static func apiKey(for provider: ModelProvider) -> String? {
-        switch provider {
-        case .claudeAPI: return load(service: claudeAPIKey)
-        case .openAI: return load(service: openAIAPIKey)
-        case .gemini: return load(service: geminiAPIKey)
-        case .claudeCLI, .buddyProxy: return nil
-        }
+        guard let service = provider.apiKeyService else { return nil }
+        return load(service: service)
     }
 
     static func saveAPIKey(_ key: String, for provider: ModelProvider) -> Bool {
-        switch provider {
-        case .claudeAPI: return save(key, service: claudeAPIKey)
-        case .openAI: return save(key, service: openAIAPIKey)
-        case .gemini: return save(key, service: geminiAPIKey)
-        case .claudeCLI, .buddyProxy: return false
-        }
+        guard let service = provider.apiKeyService else { return false }
+        return save(key, service: service)
     }
 
     static func deleteAPIKey(for provider: ModelProvider) -> Bool {
-        switch provider {
-        case .claudeAPI: return delete(service: claudeAPIKey)
-        case .openAI: return delete(service: openAIAPIKey)
-        case .gemini: return delete(service: geminiAPIKey)
-        case .claudeCLI, .buddyProxy: return false
-        }
+        guard let service = provider.apiKeyService else { return false }
+        return delete(service: service)
     }
 }

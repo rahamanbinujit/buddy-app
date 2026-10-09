@@ -6,6 +6,17 @@ enum ModelProvider: String, Codable, CaseIterable {
     case openAI
     case gemini
     case buddyProxy
+
+    var apiKeyService: String? {
+        switch self {
+        case .claudeAPI: return KeychainHelper.claudeAPIKey
+        case .openAI: return KeychainHelper.openAIAPIKey
+        case .gemini: return KeychainHelper.geminiAPIKey
+        case .claudeCLI, .buddyProxy: return nil
+        }
+    }
+
+    var requiresAPIKey: Bool { apiKeyService != nil }
 }
 
 struct ModelConfig: Codable {
@@ -51,7 +62,13 @@ struct AvailableModels {
     ]
 
     static func models(for provider: ModelProvider) -> [ModelInfo] {
-        all.filter { $0.provider == provider }
+        // Use the Claude catalog for the Claude-style proxy.
+        if provider == .buddyProxy {
+            return all.filter { $0.provider == .claudeAPI }.map {
+                ModelInfo(id: $0.id, displayName: $0.displayName, provider: .buddyProxy)
+            }
+        }
+        return all.filter { $0.provider == provider }
     }
 
     static func defaultModel(for provider: ModelProvider) -> ModelInfo? {

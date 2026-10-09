@@ -2,6 +2,7 @@ import Foundation
 
 class SettingsManager {
     static let shared = SettingsManager()
+    static let modelConfigChanged = Notification.Name("BuddyModelConfigChanged")
 
     struct Settings: Codable {
         var activeProvider: ModelProvider = .claudeCLI
@@ -31,13 +32,13 @@ class SettingsManager {
         )
     }
 
-    private init() {
+    init(settingsURL: URL? = nil) {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let buddyDir = home.appendingPathComponent(".buddy")
-        settingsURL = buddyDir.appendingPathComponent("settings.json")
+        self.settingsURL = settingsURL ?? buddyDir.appendingPathComponent("settings.json")
 
         queue.sync {
-            ensureDirectory(buddyDir)
+            ensureDirectory(self.settingsURL.deletingLastPathComponent())
             loadFromDisk()
         }
     }
@@ -54,22 +55,30 @@ class SettingsManager {
     }
 
     func setProvider(_ provider: ModelProvider) {
+        let previous = settings
         update { s in
             s.activeProvider = provider
             // Restore preferred model for this provider, or use default
-            if let preferred = s.preferredModels[provider.rawValue] {
+            if let preferred = s.preferredModels[provider.rawValue],
+               AvailableModels.models(for: provider).contains(where: { $0.id == preferred }) {
                 s.activeModelId = preferred
             } else if let defaultModel = AvailableModels.defaultModel(for: provider) {
                 s.activeModelId = defaultModel.id
             }
         }
+        if previous.activeProvider != settings.activeProvider || previous.activeModelId != settings.activeModelId {
+            NotificationCenter.default.post(name: Self.modelConfigChanged, object: nil)
+        }
     }
 
     func setModel(_ modelId: String) {
+        guard modelId != settings.activeModelId,
+              AvailableModels.models(for: settings.activeProvider).contains(where: { $0.id == modelId }) else { return }
         update { s in
             s.activeModelId = modelId
             s.preferredModels[s.activeProvider.rawValue] = modelId
         }
+        NotificationCenter.default.post(name: Self.modelConfigChanged, object: nil)
     }
 
     private func loadFromDisk() {
@@ -78,6 +87,10 @@ class SettingsManager {
               let data = fm.contents(atPath: settingsURL.path) else { return }
         do {
             settings = try JSONDecoder().decode(Settings.self, from: data)
+            if !AvailableModels.models(for: settings.activeProvider).contains(where: { $0.id == settings.activeModelId }),
+               let model = AvailableModels.defaultModel(for: settings.activeProvider) {
+                settings.activeModelId = model.id
+            }
         } catch {
             NSLog("[SettingsManager] Failed to decode settings: \(error.localizedDescription)")
         }

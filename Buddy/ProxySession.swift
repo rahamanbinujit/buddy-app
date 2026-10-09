@@ -4,6 +4,7 @@ class ProxySession: AgentSession {
     private let config: ModelConfig
     private let sseParser = SSEParser()
     private var task: URLSessionDataTask?
+    private var responseID = UUID()
     private var messages: [[String: Any]] = []
     private var currentResponseText = ""
 
@@ -51,6 +52,8 @@ class ProxySession: AgentSession {
             return
         }
         isBusy = true
+        responseID = UUID()
+        let responseID = self.responseID
         if !message.hasPrefix("<system>") {
             history.append(ChatMessage(role: .user, text: message))
         }
@@ -85,24 +88,36 @@ class ProxySession: AgentSession {
         currentResponseText = ""
         sseParser.reset()
 
-        let session = URLSession(configuration: .default, delegate: ProxyStreamDelegate(parser: sseParser), delegateQueue: nil)
+        let session = URLSession(configuration: .default, delegate: APIStreamDelegate(parser: sseParser, config: config, onError: { [weak self] message in
+            guard self?.responseID == responseID else { return }
+            self?.failResponse(message)
+        }, onComplete: { [weak self] in
+            guard self?.responseID == responseID else { return }
+            self?.finishResponse()
+        }), delegateQueue: nil)
         task = session.dataTask(with: request)
         task?.resume()
     }
 
     func terminate() {
         task?.cancel()
+        isBusy = false
         isRunning = false
     }
 
-    private func handleSSEEvent(_ json: [String: Any]) {
+    func handleSSEEvent(_ json: [String: Any]) {
+        guard isBusy, isRunning else { return }
+        if let message = APIResponseError.message(json, config: config) {
+            failResponse(message)
+            return
+        }
         let eventType = json["type"] as? String ?? ""
         switch eventType {
         case "content_block_delta":
             if let delta = json["delta"] as? [String: Any],
                let text = delta["text"] as? String {
                 currentResponseText += text
-                DispatchQueue.main.async { self.onText?(text) }
+                onText?(text)
             }
 
         case "delta":
@@ -112,75 +127,34 @@ class ProxySession: AgentSession {
                let delta = first["delta"] as? [String: Any],
                let text = delta["content"] as? String {
                 currentResponseText += text
-                DispatchQueue.main.async { self.onText?(text) }
+                onText?(text)
             }
 
         case "message_stop", "done":
-            let finalText = currentResponseText
-            if !finalText.isEmpty {
-                messages.append(["role": "assistant", "content": finalText])
-            }
-            DispatchQueue.main.async {
-                if !finalText.isEmpty {
-                    self.history.append(ChatMessage(role: .assistant, text: finalText))
-                }
-                self.isBusy = false
-                self.onTurnComplete?()
-            }
-
-        case "error":
-            let errorObj = json["error"] as? [String: Any]
-            let errMsg = errorObj?["message"] as? String ?? json["error"] as? String ?? "Something went wrong. Try again."
-            DispatchQueue.main.async {
-                self.onError?(errMsg)
-                self.isBusy = false
-                self.onTurnComplete?()
-            }
+            finishResponse()
 
         default:
             break
         }
     }
-}
 
-private class ProxyStreamDelegate: NSObject, URLSessionDataDelegate {
-    let parser: SSEParser
-    private var httpStatus: Int = 200
-    private var errorBuffer = Data()
-
-    init(parser: SSEParser) {
-        self.parser = parser
+    private func failResponse(_ message: String) {
+        guard isBusy, isRunning else { return }
+        isBusy = false
+        task?.cancel()
+        onError?(message)
     }
 
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 200
-        completionHandler(.allow)
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        if httpStatus >= 400 {
-            // Non-streaming error response (e.g., 429 usage limit)
-            errorBuffer.append(data)
+    private func finishResponse() {
+        guard isBusy, isRunning else { return }
+        guard !currentResponseText.isEmpty else {
+            failResponse("The API returned no response. Try again or choose another model in Settings.")
             return
         }
-        guard let text = String(data: data, encoding: .utf8) else { return }
-        parser.feed(text)
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if httpStatus >= 400, !errorBuffer.isEmpty {
-            // Parse the error JSON and feed it as an SSE error event
-            if let json = try? JSONSerialization.jsonObject(with: errorBuffer) as? [String: Any],
-               let errMsg = json["error"] as? String {
-                let errorEvent: [String: Any] = ["type": "error", "error": errMsg]
-                DispatchQueue.main.async {
-                    self.parser.onEvent?(errorEvent)
-                }
-            }
-            return
-        }
-        if let error = error, (error as NSError).code != NSURLErrorCancelled {
-            NSLog("[ProxySession] Connection error: \(error.localizedDescription)")
-        }
+        isBusy = false
+        let finalText = currentResponseText
+        messages.append(["role": "assistant", "content": finalText])
+        history.append(ChatMessage(role: .assistant, text: finalText))
+        onTurnComplete?()
     }
 }

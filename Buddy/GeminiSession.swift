@@ -3,6 +3,7 @@ import Foundation
 class GeminiSession: AgentSession {
     private let config: ModelConfig
     private var task: URLSessionDataTask?
+    private var responseID = UUID()
     private var messages: [[String: Any]] = []
     private var currentResponseText = ""
     private var responseBuffer = ""
@@ -43,6 +44,8 @@ class GeminiSession: AgentSession {
             return
         }
         isBusy = true
+        responseID = UUID()
+        let responseID = self.responseID
         if !message.hasPrefix("<system>") {
             history.append(ChatMessage(role: .user, text: message))
         }
@@ -90,17 +93,29 @@ class GeminiSession: AgentSession {
             self?.handleSSEEvent(json)
         }
 
-        let session = URLSession(configuration: .default, delegate: GeminiStreamDelegate(parser: sseParser, session: self), delegateQueue: nil)
+        let session = URLSession(configuration: .default, delegate: APIStreamDelegate(parser: sseParser, config: config, onError: { [weak self] message in
+            guard self?.responseID == responseID else { return }
+            self?.failResponse(message)
+        }, onComplete: { [weak self] in
+            guard self?.responseID == responseID else { return }
+            self?.finishResponse()
+        }), delegateQueue: nil)
         task = session.dataTask(with: request)
         task?.resume()
     }
 
     func terminate() {
         task?.cancel()
+        isBusy = false
         isRunning = false
     }
 
-    private func handleSSEEvent(_ json: [String: Any]) {
+    func handleSSEEvent(_ json: [String: Any]) {
+        guard isBusy, isRunning else { return }
+        if let message = APIResponseError.message(json, config: config) {
+            failResponse(message)
+            return
+        }
         // Gemini streaming response: {"candidates":[{"content":{"parts":[{"text":"..."}]}}]}
         guard let candidates = json["candidates"] as? [[String: Any]],
               let first = candidates.first,
@@ -110,7 +125,7 @@ class GeminiSession: AgentSession {
         for part in parts {
             if let text = part["text"] as? String {
                 currentResponseText += text
-                DispatchQueue.main.async { self.onText?(text) }
+                onText?(text)
             }
         }
 
@@ -120,44 +135,23 @@ class GeminiSession: AgentSession {
         }
     }
 
-    fileprivate func finishResponse() {
+    private func failResponse(_ message: String) {
+        guard isBusy, isRunning else { return }
+        isBusy = false
+        task?.cancel()
+        onError?(message)
+    }
+
+    private func finishResponse() {
+        guard isBusy, isRunning else { return }
+        guard !currentResponseText.isEmpty else {
+            failResponse("The API returned no response. Try again or choose another model in Settings.")
+            return
+        }
+        isBusy = false
         let finalText = currentResponseText
-        if !finalText.isEmpty {
-            messages.append(["role": "model", "parts": [["text": finalText]]])
-        }
-        DispatchQueue.main.async {
-            if !finalText.isEmpty {
-                self.history.append(ChatMessage(role: .assistant, text: finalText))
-            }
-            self.isBusy = false
-            self.onTurnComplete?()
-        }
-    }
-}
-
-private class GeminiStreamDelegate: NSObject, URLSessionDataDelegate {
-    let parser: SSEParser
-    weak var geminiSession: GeminiSession?
-
-    init(parser: SSEParser, session: GeminiSession) {
-        self.parser = parser
-        self.geminiSession = session
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard let text = String(data: data, encoding: .utf8) else { return }
-        parser.feed(text)
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error = error, (error as NSError).code != NSURLErrorCancelled {
-            NSLog("[GeminiSession] Connection error: \(error.localizedDescription)")
-        }
-        // Ensure we finish even if no explicit STOP reason was received
-        DispatchQueue.main.async {
-            if self.geminiSession?.isBusy == true {
-                self.geminiSession?.finishResponse()
-            }
-        }
+        messages.append(["role": "model", "parts": [["text": finalText]]])
+        history.append(ChatMessage(role: .assistant, text: finalText))
+        onTurnComplete?()
     }
 }

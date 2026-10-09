@@ -181,13 +181,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func postAuthSetup() {
-        // Auto-detect Claude CLI on first launch
-        let hasDetected = UserDefaults.standard.bool(forKey: "buddy.claudeCLIDetected")
-        if !hasDetected {
-            detectClaudeCLI()
-            UserDefaults.standard.set(true, forKey: "buddy.claudeCLIDetected")
-        }
-
         // Request screen recording permission once (first launch only)
         let hasAskedScreen = UserDefaults.standard.bool(forKey: "buddy.hasAskedScreenPermission")
         if !hasAskedScreen {
@@ -203,28 +196,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let greeting = "hey! i'm buddy, your desktop companion. click me or press Cmd+Shift+B to chat"
             buddy.playHappyPublic()
             buddy.showPreview(greeting, autoFade: true)
-        }
-    }
-
-    func detectClaudeCLI() {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let paths = [
-                "/usr/local/bin/claude",
-                "/opt/homebrew/bin/claude",
-                "\(NSHomeDirectory())/.local/bin/claude",
-                "\(NSHomeDirectory())/.claude/local/claude",
-            ]
-            let found = paths.contains { FileManager.default.isExecutableFile(atPath: $0) }
-
-            DispatchQueue.main.async {
-                if found {
-                    SettingsManager.shared.setProvider(.claudeCLI)
-                } else {
-                    // No Claude CLI — default to Gemini (free API key from Google AI Studio)
-                    SettingsManager.shared.setProvider(.gemini)
-                    SettingsManager.shared.setModel("gemini-2.5-flash")
-                }
-            }
         }
     }
 

@@ -26,6 +26,8 @@ class BuddyCharacter {
     var clickOutsideMonitor: Any?
     var escapeMonitor: Any?
 
+    private var modelConfigObserver: NSObjectProtocol?
+
     var session: AgentSession?
     var isStartingSession = false
     var currentStreamingText = ""
@@ -95,6 +97,18 @@ class BuddyCharacter {
     var lastFloorY: CGFloat = 0
     var lastDockX: CGFloat = 0
     var lastDockWidth: CGFloat = 800
+
+    init() {
+        modelConfigObserver = NotificationCenter.default.addObserver(
+            forName: SettingsManager.modelConfigChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.resetSessionForSettingsChange()
+        }
+    }
+
+    deinit {
+        if let observer = modelConfigObserver { NotificationCenter.default.removeObserver(observer) }
+    }
 
     // MARK: - Setup
 
@@ -979,16 +993,17 @@ class BuddyCharacter {
             newSession.start()
         }
 
-        if popoverWindow == nil { createPopover() }
+        if popoverWindow == nil {
+            createPopover()
+            if let session = session, !session.history.isEmpty {
+                terminalView?.replayHistory(session.history)
+            }
+        }
 
         // Update model indicator
         if let inner = popoverWindow?.contentView?.subviews.first,
            let modelLabel = inner.viewWithTag(999) as? NSTextField {
             modelLabel.stringValue = SettingsManager.shared.activeModelConfig.displayName
-        }
-
-        if let terminal = terminalView, let session = session, !session.history.isEmpty {
-            terminal.replayHistory(session.history)
         }
 
         positionPopover()
@@ -1221,11 +1236,19 @@ class BuddyCharacter {
         s.onError = { [weak self] text in
             NSLog("[Session] Error: %@", text)
             self?.terminalView?.removeThinking()
+            self?.terminalView?.endStreaming()
             self?.terminalView?.appendError(text)
             self?.isStartingSession = false
             self?.isAutoComment = false
             self?.autoCommentTimeout?.invalidate()
             self?.currentStreamingText = ""
+            if self?.isVoiceTriggered == true {
+                self?.isVoiceMode = false
+                self?.isVoiceTriggered = false
+                self?.hidePreview()
+                self?.spriteRenderer?.setFrame(.idle)
+                self?.scheduleNextComment()
+            }
             if self?.session?.isRunning == false {
                 self?.session = nil
             }
@@ -1250,6 +1273,34 @@ class BuddyCharacter {
             self?.autoCommentTimeout?.invalidate()
             self?.currentStreamingText = ""
             self?.session = nil
+        }
+    }
+
+    private func resetSessionForSettingsChange() {
+        if let oldSession = session {
+            oldSession.onText = nil
+            oldSession.onError = nil
+            oldSession.onToolUse = nil
+            oldSession.onToolResult = nil
+            oldSession.onSessionReady = nil
+            oldSession.onTurnComplete = nil
+            oldSession.onProcessExit = nil
+            oldSession.terminate()
+        }
+        session = nil
+        voiceSession?.terminate()
+        voiceSession = nil
+        isVoiceMode = false
+        isVoiceTriggered = false
+        isStartingSession = false
+        isAutoComment = false
+        autoCommentTimeout?.invalidate()
+        currentStreamingText = ""
+        terminalView?.removeThinking()
+        terminalView?.endStreaming()
+        if let inner = popoverWindow?.contentView?.subviews.first,
+           let modelLabel = inner.viewWithTag(999) as? NSTextField {
+            modelLabel.stringValue = SettingsManager.shared.activeModelConfig.displayName
         }
     }
 
